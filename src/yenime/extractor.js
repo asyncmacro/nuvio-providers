@@ -666,6 +666,20 @@ async function _resolveViaTmdb(tmdbId, mediaType) {
             console.warn(`[Yenime] TMDB API lookup failed for ${tmdbId}: ${err.message}`);
         }
     }
+    if (!meta && !pageLoaded) {
+        // The id may exist under the other kind (the app can mislabel a movie
+        // as tv or vice versa) — one cheap cross-kind retry before giving up.
+        try {
+            const otherKind = kind === 'movie' ? 'tv' : 'movie';
+            const otherMeta = await _tmdbPageMeta(tmdbId, otherKind);
+            if (otherMeta && otherMeta.title) {
+                meta = otherMeta;
+                pageLoaded = true;
+            }
+        } catch (err) {
+            console.warn(`[Yenime] TMDB cross-kind lookup failed for ${tmdbId}: ${err.message}`);
+        }
+    }
     if (!meta || !meta.title) {
         if (!pageLoaded) {
             // No TMDB page for this id (404/unreachable) — the ladder should
@@ -725,9 +739,11 @@ async function _tmdbPageMeta(tmdbId, kind) {
         .replace(/&#821[67];|&#x201[89];/g, "'")
         .trim();
 
-    const tvMatch = title.match(/^(.*?)\s*\(TV Series (\d{4})\)\s*$/i);
+    // Accept "(TV Series 1999)", "(TV Series)" (no year, e.g. duplicate/alt
+    // TMDB entries), and year ranges like "(TV Series 2023\u20132024)".
+    const tvMatch = title.match(/^(.*?)\s*\(TV Series(?:\s+(\d{4})(?:[\u2013\u2014-]\d{4})?)?\)\s*$/i);
     if (tvMatch) {
-        return { title: tvMatch[1].trim(), year: parseInt(tvMatch[2], 10) };
+        return { title: tvMatch[1].trim(), year: tvMatch[2] ? parseInt(tvMatch[2], 10) : 0 };
     }
     const movieMatch = title.match(/^(.*?)\s*\((\d{4})\)\s*$/i);
     if (movieMatch) {

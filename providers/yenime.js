@@ -1,6 +1,6 @@
 /**
  * yenime - Built from src/yenime/
- * Generated: 2026-08-15T23:35:04.230Z
+ * Generated: 2026-08-15T23:40:10.277Z
  */
 var __defProp = Object.defineProperty;
 var __defProps = Object.defineProperties;
@@ -607,6 +607,18 @@ function _resolveViaTmdb(tmdbId, mediaType) {
         console.warn(`[Yenime] TMDB API lookup failed for ${tmdbId}: ${err.message}`);
       }
     }
+    if (!meta && !pageLoaded) {
+      try {
+        const otherKind = kind === "movie" ? "tv" : "movie";
+        const otherMeta = yield _tmdbPageMeta(tmdbId, otherKind);
+        if (otherMeta && otherMeta.title) {
+          meta = otherMeta;
+          pageLoaded = true;
+        }
+      } catch (err) {
+        console.warn(`[Yenime] TMDB cross-kind lookup failed for ${tmdbId}: ${err.message}`);
+      }
+    }
     if (!meta || !meta.title) {
       if (!pageLoaded) {
         console.warn(`[Yenime] No TMDB page for ${tmdbId}; trying MAL/AniList ids`);
@@ -649,9 +661,9 @@ function _tmdbPageMeta(tmdbId, kind) {
     }
     const raw = match[1].replace(/&#8212;.*$/i, "");
     const title = raw.replace(/&amp;/g, "&").replace(/&#0?39;|&apos;/g, "'").replace(/&quot;/g, '"').replace(/&#x27;/g, "'").replace(/&#821[67];|&#x201[89];/g, "'").trim();
-    const tvMatch = title.match(/^(.*?)\s*\(TV Series (\d{4})\)\s*$/i);
+    const tvMatch = title.match(/^(.*?)\s*\(TV Series(?:\s+(\d{4})(?:[\u2013\u2014-]\d{4})?)?\)\s*$/i);
     if (tvMatch) {
-      return { title: tvMatch[1].trim(), year: parseInt(tvMatch[2], 10) };
+      return { title: tvMatch[1].trim(), year: tvMatch[2] ? parseInt(tvMatch[2], 10) : 0 };
     }
     const movieMatch = title.match(/^(.*?)\s*\((\d{4})\)\s*$/i);
     if (movieMatch) {

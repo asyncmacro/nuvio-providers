@@ -177,6 +177,13 @@ Other fixes vs kitsune:
     TMDB 209867 (Frieren) previously matched the "Sousou no Frieren: ●● no
     Mahou" ONA spinoff because the backend stores curly apostrophes;
     now it resolves to the main series (MAL 52991)
+  * `_tmdbPageMeta` accepts year-less `(TV Series)` titles and year ranges
+    (e.g. 2023–2024): TMDB has duplicate/alt entries like tv/295389
+    "Solo Leveling (TV Series)" with no year in `<title>` — the old parser
+    required `(TV Series YYYY)` and failed to resolve them → 0 streams
+  * Cross-kind retry in `_resolveViaTmdb`: when the page 404s for the given
+    kind (movie vs tv), retry the other kind once before giving up
+    (apps can mislabel the mediaType; movie/1357633-as-tv now resolves)
 
 Verified against the live backend (token → megaplay → HLS master → variants):
 - TMDB 37854 (One Piece) → 1 stream @1080p; TMDB 372058 (Your Name) → 1 stream
