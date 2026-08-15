@@ -1,6 +1,6 @@
 /**
  * yenime - Built from src/yenime/
- * Generated: 2026-08-15T22:45:00.850Z
+ * Generated: 2026-08-15T23:23:32.795Z
  */
 var __defProp = Object.defineProperty;
 var __defProps = Object.defineProperties;
@@ -152,6 +152,7 @@ var TMDB_API_KEY = (() => {
   }
 })();
 var seasonChainCache = /* @__PURE__ */ new Map();
+var NOT_ANIME = { notAnime: true };
 var cachedToken = null;
 var tokenExpiry = 0;
 function _invalidateToken() {
@@ -452,6 +453,10 @@ function extractStreams(tmdbId, mediaType, season, episode, languages) {
   return __async(this, null, function* () {
     try {
       let resolved = yield _resolveInput(tmdbId, mediaType);
+      if (resolved && resolved.notAnime) {
+        console.log(`[Yenime] ${tmdbId} is a known TMDB id with no anime match; returning no streams`);
+        return [];
+      }
       if (!resolved || !resolved.malId) {
         const numeric = parseInt(tmdbId, 10);
         if (!isNaN(numeric)) {
@@ -543,55 +548,185 @@ function getAnimeDetail(anilistId) {
 }
 function _resolveInput(input, mediaType) {
   return __async(this, null, function* () {
-    try {
-      if (typeof input !== "number" && !/^\d+$/.test(String(input))) {
-        return null;
-      }
-      const id = parseInt(input, 10);
-      const infoByMal = yield getAnimeInfoByMal(id);
-      if (infoByMal) {
-        return { malId: id, anilistId: infoByMal.id, media: infoByMal, source: "mal" };
-      }
-      const infoById = yield getAnimeDetail(id);
-      if (infoById) {
-        return { malId: infoById.idMal || id, anilistId: id, media: infoById, source: "anilist" };
-      }
-      const viaTmdb = yield _resolveViaTmdb(id, mediaType);
-      return viaTmdb;
-    } catch (err) {
-      console.warn(`[Yenime] Resolver error for ${input}: ${err.message}`);
+    if (typeof input !== "number" && !/^\d+$/.test(String(input))) {
       return null;
     }
+    const id = parseInt(input, 10);
+    const viaTmdb = yield _resolveViaTmdb(id, mediaType);
+    if (viaTmdb === NOT_ANIME) {
+      return NOT_ANIME;
+    }
+    if (viaTmdb) {
+      return viaTmdb;
+    }
+    let infoByMal = null;
+    try {
+      infoByMal = yield getAnimeInfoByMal(id);
+    } catch (err) {
+      console.warn(`[Yenime] L-MAL lookup failed for ${id}: ${err.message}`);
+    }
+    if (infoByMal) {
+      return { malId: id, anilistId: infoByMal.id, media: infoByMal, source: "mal" };
+    }
+    let infoById = null;
+    try {
+      infoById = yield getAnimeDetail(id);
+    } catch (err) {
+      console.warn(`[Yenime] L-AL lookup failed for ${id}: ${err.message}`);
+    }
+    if (infoById) {
+      return { malId: infoById.idMal || id, anilistId: id, media: infoById, source: "anilist" };
+    }
+    return null;
   });
 }
 function _resolveViaTmdb(tmdbId, mediaType) {
   return __async(this, null, function* () {
-    if (!TMDB_API_KEY) {
-      return null;
-    }
     const kind = String(mediaType || "").toLowerCase() === "movie" ? "movie" : "tv";
-    let info;
+    let meta = null;
+    let pageLoaded = false;
     try {
-      const url = `${TMDB_API_BASE}/${kind}/${tmdbId}?api_key=${TMDB_API_KEY}&language=en-US`;
-      info = yield fetchJson(url, {
-        headers: { Accept: "application/json", "User-Agent": ANILIST_UA }
-      });
+      meta = yield _tmdbPageMeta(tmdbId, kind);
+      pageLoaded = true;
     } catch (err) {
-      console.warn(`[Yenime] TMDB lookup failed for ${tmdbId}: ${err.message}`);
-      return null;
+      console.warn(`[Yenime] TMDB page lookup failed for ${tmdbId}: ${err.message}`);
     }
-    const title = info && (info.title || info.name);
-    const year = String(info && (info.release_date || info.first_air_date) || "").slice(0, 4);
-    if (!title) {
-      return null;
+    if (!meta && TMDB_API_KEY) {
+      try {
+        const url = `${TMDB_API_BASE}/${kind}/${tmdbId}?api_key=${TMDB_API_KEY}&language=en-US`;
+        const info = yield fetchJson(url, {
+          headers: { Accept: "application/json", "User-Agent": ANILIST_UA }
+        });
+        const apiTitle = info && (info.title || info.name);
+        const apiYear = String(info && (info.release_date || info.first_air_date) || "").slice(0, 4);
+        if (apiTitle) {
+          meta = { title: apiTitle, year: parseInt(apiYear, 10) || 0 };
+          pageLoaded = true;
+        }
+      } catch (err) {
+        console.warn(`[Yenime] TMDB API lookup failed for ${tmdbId}: ${err.message}`);
+      }
     }
-    const media = yield _searchAnilistByTitle(title, year);
+    if (!meta || !meta.title) {
+      if (!pageLoaded) {
+        console.warn(`[Yenime] No TMDB page for ${tmdbId}; trying MAL/AniList ids`);
+        return null;
+      }
+      return NOT_ANIME;
+    }
+    const viaVidbolt = yield _vidboltSearchByTitle(meta.title, meta.year, mediaType);
+    if (viaVidbolt) {
+      console.log(`[Yenime] TMDB ${tmdbId} -> MAL ${viaVidbolt.malId} "${meta.title}" (Vidbolt search)`);
+      return { malId: viaVidbolt.malId, anilistId: viaVidbolt.anilistId, media: null, source: "tmdb" };
+    }
+    let media = null;
+    try {
+      media = yield _searchAnilistByTitle(meta.title, meta.year);
+    } catch (err) {
+      console.warn(`[Yenime] AniList title search failed: ${err.message}`);
+    }
     if (!media) {
-      console.warn(`[Yenime] No AniList match for TMDB ${tmdbId} ("${title}", ${year})`);
-      return null;
+      console.warn(`[Yenime] TMDB ${tmdbId} ("${meta.title}", ${meta.year}) exists but has no anime match`);
+      return NOT_ANIME;
     }
     console.log(`[Yenime] TMDB ${tmdbId} -> MAL ${media.idMal} (${media.title.english || media.title.romaji})`);
     return { malId: media.idMal, anilistId: media.id, media, source: "tmdb" };
+  });
+}
+function _tmdbPageMeta(tmdbId, kind) {
+  return __async(this, null, function* () {
+    const url = `https://www.themoviedb.org/${kind === "movie" ? "movie" : "tv"}/${encodeURIComponent(tmdbId)}`;
+    const html = yield fetchText(url, {
+      headers: {
+        "User-Agent": HEADERS["User-Agent"],
+        "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9"
+      }
+    });
+    const match = html.match(/<title>(.*?)<\/title>/i);
+    if (!match) {
+      return null;
+    }
+    const raw = match[1].replace(/&#8212;.*$/i, "");
+    const title = raw.replace(/&amp;/g, "&").replace(/&#0?39;|&apos;/g, "'").replace(/&quot;/g, '"').replace(/&#x27;/g, "'").replace(/&#8217;/g, "\u2019").trim();
+    const tvMatch = title.match(/^(.*?)\s*\(TV Series (\d{4})\)\s*$/i);
+    if (tvMatch) {
+      return { title: tvMatch[1].trim(), year: parseInt(tvMatch[2], 10) };
+    }
+    const movieMatch = title.match(/^(.*?)\s*\((\d{4})\)\s*$/i);
+    if (movieMatch) {
+      return { title: movieMatch[1].trim(), year: parseInt(movieMatch[2], 10) };
+    }
+    return { title, year: 0 };
+  });
+}
+function _vidboltSearchByTitle(title, year, mediaType) {
+  return __async(this, null, function* () {
+    let token = null;
+    try {
+      token = yield _getVidboltToken();
+    } catch (err) {
+      return null;
+    }
+    let data = null;
+    try {
+      const url = `${VIDBOLT_API}/search?q=${encodeURIComponent(title)}`;
+      data = yield fetchJson(url, {
+        headers: {
+          Accept: "application/json",
+          Referer: VIDBOLT_HOME,
+          Origin: VIDBOLT_API,
+          "x-api-key": token
+        }
+      });
+    } catch (err) {
+      console.warn(`[Yenime] Vidbolt search failed: ${err.message}`);
+      return null;
+    }
+    const results = data && data.results || [];
+    if (!results.length) {
+      return null;
+    }
+    const wantYear = parseInt(year, 10);
+    const wantMovie = String(mediaType || "").toLowerCase() === "movie";
+    const normalized = String(title || "").toLowerCase().trim();
+    const ci = (v) => String(v || "").toLowerCase().trim();
+    let best = null;
+    let bestScore = -Infinity;
+    for (const r of results) {
+      if (!r.malId)
+        continue;
+      const t = ci(r.title);
+      const ro = ci(r.titleRomaji);
+      let score = 0;
+      if (t === normalized || ro === normalized) {
+        score += 100;
+      } else if (t.includes(normalized) || normalized.includes(t) || ro.includes(normalized) || normalized.includes(ro)) {
+        score += 40;
+      }
+      const fmt = String(r.format || "").toUpperCase();
+      if (wantMovie && fmt === "MOVIE")
+        score += 20;
+      if (!wantMovie && fmt === "TV")
+        score += 20;
+      if (fmt === "SPECIAL" || fmt === "ONA" || fmt === "OVA")
+        score -= 10;
+      if (wantYear) {
+        const ry = parseInt(r.year, 10);
+        if (ry === wantYear)
+          score += 15;
+        else if (ry && Math.abs(ry - wantYear) <= 1)
+          score += 5;
+      }
+      if (score > bestScore) {
+        bestScore = score;
+        best = r;
+      }
+    }
+    if (!best || bestScore < 40) {
+      return null;
+    }
+    return { malId: parseInt(best.malId, 10), anilistId: best.id, title: best.title };
   });
 }
 var ANILIST_TITLE_SEARCH_QUERY = `
@@ -630,6 +765,7 @@ function _searchAnilistByTitle(title, year) {
       if (near) {
         return near;
       }
+      return null;
     }
     return list[0];
   });

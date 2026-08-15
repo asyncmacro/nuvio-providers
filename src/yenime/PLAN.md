@@ -151,16 +151,31 @@ Other fixes vs kitsune:
   headers (was dropping `Content-Type: application/json` and UA on POSTs)
 - Subtitle format detects `.vtt`/`.ass`/`.ssa` inside proxy query strings, not
   just the URL tail (proxy URLs end with `&referer=...`)
+- TMDB→MAL resolver is keyless and TMDB-first (fixed the in-app "No streams"
+  on search→play):
+  * TMDB page `<title>` (keyless) or TMDB API (only if `TMDB_API_KEY` set) →
+    title+year; Vidbolt `/search?q=` returns AniList-id + `malId` per result,
+    scored by exact-title > contains > format preference (movie/TV) > year
+    proximity, side content (SPECIAL/ONA/OVA) demoted, min score required
+  * Ladder order: TMDB-first (Nuvio passes TMDB ids; TMDB ids collide with
+    MAL ids, e.g. TMDB 37854 is One Piece while MAL 37854 is unrelated) →
+    MAL passthrough → AniList passthrough
+  * If a valid TMDB page exists but no anime matches (`NOT_ANIME` sentinel),
+    return `[]` instead of guessing a MAL id (TMDB 456 = The Simpsons must
+    not serve MAL 456's content)
+  * If the TMDB page 404s, fall through to MAL/AniList ids (kitsune-style
+    traffic, e.g. MAL 52991 Frieren) — movies and season-1 episodes also
+    work via MAL-direct when AniList is unreachable
 
 Verified against the live backend (token → megaplay → HLS master → variants):
-- TV ep1 (MAL 21, 52991) → 1 stream @1080p with subtitles attached
-- Movie (MAL 28851) → 1 stream, movie → episode 1 mapping
+- TMDB 37854 (One Piece) → 1 stream @1080p; TMDB 372058 (Your Name) → 1 stream
+- TMDB 456 (Simpsons) / TMDB 28851 (Video Violence) → `[]` (not anime)
+- MAL 52991 (Frieren) → 1 stream @1080p with season chain (S1/S2/S3)
 - Dub → sub fallback exercised; missing-content titles return `[]` cleanly
 AniList is Cloudflare-blocked from this network (egress via 104.22.x.x) and got
-IP rate-limited after repeated probes, so the AniList resolution steps cannot be
-exercised locally right now. The resolver now degrades gracefully: when AniList
-is unreachable, the input id is used as a MAL id directly (kitsune convention),
-so movies and season-1 episodes still return streams from the Vidbolt backend.
+IP rate-limited after repeated probes, so AniList steps are exercised when the
+block lifts; the scraper degrades to MAL-direct / Vidbolt search paths when
+AniList is unreachable, so streams work even then.
 
 ## Build & Register
 
@@ -171,10 +186,11 @@ so movies and season-1 episodes still return streams from the Vidbolt backend.
 
 - AniList rate limiting (429) — handled with retry/backoff; consider honoring `Retry-After`.
 - Vidbolt token may change or be revoked — refresh on 401/403, cache ~2.5h.
-- TMDB id vs MAL id mismatch for real Nuvio users — resolver ladder implemented
-  (L1 MAL → L2 AniList id → L3 TMDB title+year search, TMDB step requires
-  `TMDB_API_KEY`); without AniList/TMDB the input is treated as MAL (kitsune
-  convention), which is correct for movies and season-1 episodes.
+- TMDB id vs MAL id mismatch for real Nuvio users — resolver is TMDB-first and
+  keyless (TMDB page `<title>` → Vidbolt `/search?q=` → malId); TMDB ids that
+  collide with MAL ids resolve correctly (TMDB 37854 → One Piece, not MAL
+  37854); non-anime TMDB ids return `[]` via the `NOT_ANIME` sentinel instead
+  of guessing; kitsune-style MAL ids with no TMDB page fall through.
 - HLS parsing without `m3u8` npm package — use fetch + regex fallback (implemented).
 - Season chains are a heuristic (side stories / alternate versions may not chain cleanly).
 - API host/endpoints (`hianime.filmu.in`) may change — keep constants centralized in `http.js`.
@@ -185,8 +201,10 @@ so movies and season-1 episodes still return streams from the Vidbolt backend.
 - [x] extractor.js: token fetch, season chain, megaplay fetch, HLS expansion, search
 - [x] index.js entry point
 - [x] provider.json manifest
-- [ ] v2 enhancements (TMDB→MAL mapping via TMDB_API_KEY ladder, Retry-After honoring)
+- [ ] v2 enhancements (Retry-After honoring, TMDB_API_KEY configurable per install)
 - [x] `node build.js yenime` (output in `providers/yenime.js`)
 - [x] Manifest entry in `manifest.json` (id `yenime`, filename `providers/yenime.js`)
-- [x] End-to-end test of built `providers/yenime.js` (TV ep1 + movie streams via
-      Vidbolt backend; MAL-direct fallback engaged while AniList is IP-blocked)
+- [x] End-to-end test of built `providers/yenime.js`: TMDB ids (37854, 372058)
+      resolve keyless via Vidbolt search; non-anime TMDB ids return `[]`;
+      MAL ids without TMDB pages fall through to MAL/AniList passthrough;
+      season chains build from AniList SEQUEL edges; dub→sub fallback works

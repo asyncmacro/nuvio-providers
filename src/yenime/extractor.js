@@ -80,9 +80,9 @@ const DUB_LANGUAGE_FLAGS = ['dub', 'dubbed', 'en-dub', 'english-dub', 'english d
 // AniList GraphQL traffic.
 const ANILIST_UA = 'kitsune/0.1';
 
-// TMDB API key for the TMDB -> MAL ladder. Optional: leave empty to disable
-// the TMDB path (MAL and AniList ids still work). Set via env TMDB_API_KEY
-// or edit this constant.
+// TMDB API key for the TMDB -> MAL ladder. Optional: the keyless path (TMDB
+// website <title> + Vidbolt /search) is tried first; the official API is only
+// used as a fallback when a key is set via env TMDB_API_KEY.
 const TMDB_API_BASE = 'https://api.themoviedb.org/3';
 const TMDB_API_KEY = (() => {
     try {
@@ -94,6 +94,9 @@ const TMDB_API_KEY = (() => {
 
 // Season chain cache: root anilist id -> chain.
 const seasonChainCache = new Map();
+
+// Sentinel: the id is a real TMDB id but does not map to any anime.
+const NOT_ANIME = { notAnime: true };
 
 // Token cache
 let cachedToken = null;
@@ -452,6 +455,14 @@ export async function extractStreams(tmdbId, mediaType, season, episode, languag
         // For Yenime, the incoming id may be MAL, AniList, or TMDB.
         let resolved = await _resolveInput(tmdbId, mediaType);
 
+        // A valid TMDB id with no anime match is a definitive miss: do not
+        // guess at MAL ids (they collide, e.g. TMDB 9999 -> MAL 9999 could be
+        // an anime with content).
+        if (resolved && resolved.notAnime) {
+            console.log(`[Yenime] ${tmdbId} is a known TMDB id with no anime match; returning no streams`);
+            return [];
+        }
+
         // AniList unreachable or id not found there: fall back to treating the
         // incoming id as a MAL id (kitsune convention). Movies and season-1
         // streams only need the MAL id, so they keep working without AniList.
@@ -574,74 +585,229 @@ async function getAnimeDetail(anilistId) {
 /**
  * Resolve the incoming Nuvio tmdbId to a MAL id + AniList id.
  *
- * Ladder (first hit wins, each step cached):
- *   1. MAL id direct      — Media(idMal: X)            (kitsune convention)
- *   2. AniList id direct  — Media(id: X)               (AniList-based apps)
- *   3. TMDB id            — TMDB title+year (needs TMDB_API_KEY) ->
- *                           AniList search title+year  (TMDB-based apps)
+ * Nuvio passes TMDB ids, and TMDB ids collide with MAL ids (e.g. TMDB 37854
+ * is One Piece while MAL 37854 is an unrelated 2015 show), so the TMDB step
+ * must come FIRST; MAL/AniList passthrough is only used when the TMDB id has
+ * no TMDB page (kitsune-style traffic). Each step is individually guarded so
+ * an AniList outage cannot break the TMDB path (Vidbolt search needs no
+ * AniList).
  */
 async function _resolveInput(input, mediaType) {
-    try {
-        if (typeof input !== 'number' && !/^\d+$/.test(String(input))) {
-            return null;
-        }
-        const id = parseInt(input, 10);
-
-        // L1: treat as MAL id
-        const infoByMal = await getAnimeInfoByMal(id);
-        if (infoByMal) {
-            return { malId: id, anilistId: infoByMal.id, media: infoByMal, source: 'mal' };
-        }
-
-        // L2: treat as AniList id
-        const infoById = await getAnimeDetail(id);
-        if (infoById) {
-            return { malId: infoById.idMal || id, anilistId: id, media: infoById, source: 'anilist' };
-        }
-
-        // L3: TMDB id (requires TMDB_API_KEY)
-        const viaTmdb = await _resolveViaTmdb(id, mediaType);
-        return viaTmdb;
-    } catch (err) {
-        // AniList/TMDB unreachable, rate-limited, or malformed response —
-        // signal a miss so the caller can fall back to MAL-direct.
-        console.warn(`[Yenime] Resolver error for ${input}: ${err.message}`);
+    if (typeof input !== 'number' && !/^\d+$/.test(String(input))) {
         return null;
     }
+    const id = parseInt(input, 10);
+
+    // L-TMDB: Nuvio traffic. Keyless via TMDB page title -> Vidbolt search.
+    const viaTmdb = await _resolveViaTmdb(id, mediaType);
+    if (viaTmdb === NOT_ANIME) {
+        // Real TMDB id, no anime behind it — do not guess MAL ids (collisions
+        // can serve wrong content, e.g. TMDB 456 "The Simpsons" vs MAL 456).
+        return NOT_ANIME;
+    }
+    if (viaTmdb) {
+        return viaTmdb;
+    }
+
+    // L-MAL: kitsune convention (TMDB lookup failed -> id likely is a MAL id).
+    let infoByMal = null;
+    try {
+        infoByMal = await getAnimeInfoByMal(id);
+    } catch (err) {
+        console.warn(`[Yenime] L-MAL lookup failed for ${id}: ${err.message}`);
+    }
+    if (infoByMal) {
+        return { malId: id, anilistId: infoByMal.id, media: infoByMal, source: 'mal' };
+    }
+
+    // L-AL: AniList id.
+    let infoById = null;
+    try {
+        infoById = await getAnimeDetail(id);
+    } catch (err) {
+        console.warn(`[Yenime] L-AL lookup failed for ${id}: ${err.message}`);
+    }
+    if (infoById) {
+        return { malId: infoById.idMal || id, anilistId: id, media: infoById, source: 'anilist' };
+    }
+
+    return null;
 }
 
 async function _resolveViaTmdb(tmdbId, mediaType) {
-    if (!TMDB_API_KEY) {
-        return null;
-    }
-
     const kind = String(mediaType || '').toLowerCase() === 'movie' ? 'movie' : 'tv';
 
-    let info;
+    // TMDB title + year, keyless via the TMDB website. JSON-LD dates are DB
+    // entry timestamps, so parse the <title> tag instead:
+    //   "Your Name. (2016) &#8212; The Movie Database (TMDB)"
+    //   "One Piece (TV Series 1999) &#8212; The Movie Database (TMDB)"
+    let meta = null;
+    let pageLoaded = false;
     try {
-        const url = `${TMDB_API_BASE}/${kind}/${tmdbId}?api_key=${TMDB_API_KEY}&language=en-US`;
-        info = await fetchJson(url, {
-            headers: { Accept: 'application/json', 'User-Agent': ANILIST_UA },
-        });
+        meta = await _tmdbPageMeta(tmdbId, kind);
+        pageLoaded = true;
     } catch (err) {
-        console.warn(`[Yenime] TMDB lookup failed for ${tmdbId}: ${err.message}`);
-        return null;
+        console.warn(`[Yenime] TMDB page lookup failed for ${tmdbId}: ${err.message}`);
+    }
+    if (!meta && TMDB_API_KEY) {
+        // Fallback to the official API when a key is available.
+        try {
+            const url = `${TMDB_API_BASE}/${kind}/${tmdbId}?api_key=${TMDB_API_KEY}&language=en-US`;
+            const info = await fetchJson(url, {
+                headers: { Accept: 'application/json', 'User-Agent': ANILIST_UA },
+            });
+            const apiTitle = info && (info.title || info.name);
+            const apiYear = String(info && (info.release_date || info.first_air_date) || '').slice(0, 4);
+            if (apiTitle) {
+                meta = { title: apiTitle, year: parseInt(apiYear, 10) || 0 };
+                pageLoaded = true;
+            }
+        } catch (err) {
+            console.warn(`[Yenime] TMDB API lookup failed for ${tmdbId}: ${err.message}`);
+        }
+    }
+    if (!meta || !meta.title) {
+        if (!pageLoaded) {
+            // No TMDB page for this id (404/unreachable) — the ladder should
+            // keep going and try MAL / AniList ids.
+            console.warn(`[Yenime] No TMDB page for ${tmdbId}; trying MAL/AniList ids`);
+            return null;
+        }
+        // Page loaded but title unusable — treat as not-anime (conservative).
+        return NOT_ANIME;
     }
 
-    const title = info && (info.title || info.name);
-    const year = String(info && (info.release_date || info.first_air_date) || '').slice(0, 4);
-    if (!title) {
-        return null;
+    // Primary: Vidbolt keyword search (no AniList dependency).
+    const viaVidbolt = await _vidboltSearchByTitle(meta.title, meta.year, mediaType);
+    if (viaVidbolt) {
+        console.log(`[Yenime] TMDB ${tmdbId} -> MAL ${viaVidbolt.malId} "${meta.title}" (Vidbolt search)`);
+        return { malId: viaVidbolt.malId, anilistId: viaVidbolt.anilistId, media: null, source: 'tmdb' };
     }
 
-    const media = await _searchAnilistByTitle(title, year);
+    // Backup: AniList title+year search.
+    let media = null;
+    try {
+        media = await _searchAnilistByTitle(meta.title, meta.year);
+    } catch (err) {
+        console.warn(`[Yenime] AniList title search failed: ${err.message}`);
+    }
     if (!media) {
-        console.warn(`[Yenime] No AniList match for TMDB ${tmdbId} ("${title}", ${year})`);
-        return null;
+        console.warn(`[Yenime] TMDB ${tmdbId} ("${meta.title}", ${meta.year}) exists but has no anime match`);
+        return NOT_ANIME;
     }
 
     console.log(`[Yenime] TMDB ${tmdbId} -> MAL ${media.idMal} (${media.title.english || media.title.romaji})`);
     return { malId: media.idMal, anilistId: media.id, media, source: 'tmdb' };
+}
+
+// Fetch the TMDB page and extract { title, year } from its <title> tag.
+async function _tmdbPageMeta(tmdbId, kind) {
+    const url = `https://www.themoviedb.org/${kind === 'movie' ? 'movie' : 'tv'}/${encodeURIComponent(tmdbId)}`;
+    const html = await fetchText(url, {
+        headers: {
+            'User-Agent': HEADERS['User-Agent'],
+            'Accept': 'text/html,application/xhtml+xml,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+        },
+    });
+    const match = html.match(/<title>(.*?)<\/title>/i);
+    if (!match) {
+        return null;
+    }
+    const raw = match[1].replace(/&#8212;.*$/i, ''); // strip "— The Movie Database (TMDB)"
+    const title = raw
+        .replace(/&amp;/g, '&')
+        .replace(/&#0?39;|&apos;/g, "'")
+        .replace(/&quot;/g, '"')
+        .replace(/&#x27;/g, "'")
+        .replace(/&#8217;/g, '\u2019')
+        .trim();
+
+    const tvMatch = title.match(/^(.*?)\s*\(TV Series (\d{4})\)\s*$/i);
+    if (tvMatch) {
+        return { title: tvMatch[1].trim(), year: parseInt(tvMatch[2], 10) };
+    }
+    const movieMatch = title.match(/^(.*?)\s*\((\d{4})\)\s*$/i);
+    if (movieMatch) {
+        return { title: movieMatch[1].trim(), year: parseInt(movieMatch[2], 10) };
+    }
+    return { title, year: 0 };
+}
+
+// Search the Vidbolt backend for a MAL id by title. The /search endpoint
+// returns AniList-based results that include both `id` (AniList) and `malId`,
+// so no AniList GraphQL call is needed for the common TMDB -> MAL case.
+async function _vidboltSearchByTitle(title, year, mediaType) {
+    let token = null;
+    try {
+        token = await _getVidboltToken();
+    } catch (err) {
+        return null;
+    }
+
+    let data = null;
+    try {
+        const url = `${VIDBOLT_API}/search?q=${encodeURIComponent(title)}`;
+        data = await fetchJson(url, {
+            headers: {
+                Accept: 'application/json',
+                Referer: VIDBOLT_HOME,
+                Origin: VIDBOLT_API,
+                'x-api-key': token,
+            },
+        });
+    } catch (err) {
+        console.warn(`[Yenime] Vidbolt search failed: ${err.message}`);
+        return null;
+    }
+
+    const results = (data && data.results) || [];
+    if (!results.length) {
+        return null;
+    }
+
+    const wantYear = parseInt(year, 10);
+    const wantMovie = String(mediaType || '').toLowerCase() === 'movie';
+    const normalized = String(title || '').toLowerCase().trim();
+    const ci = (v) => String(v || '').toLowerCase().trim();
+
+    // Score each result: exact title match dominates; format preference and
+    // year proximity break ties; collab CMs / side content (SPECIAL/ONA/OVA)
+    // are demoted so e.g. "Your Name." (MOVIE) beats the Suntory collab CM.
+    let best = null;
+    let bestScore = -Infinity;
+    for (const r of results) {
+        if (!r.malId) continue;
+        const t = ci(r.title);
+        const ro = ci(r.titleRomaji);
+        let score = 0;
+        if (t === normalized || ro === normalized) {
+            score += 100;
+        } else if (t.includes(normalized) || normalized.includes(t) || ro.includes(normalized) || normalized.includes(ro)) {
+            score += 40;
+        }
+        const fmt = String(r.format || '').toUpperCase();
+        if (wantMovie && fmt === 'MOVIE') score += 20;
+        if (!wantMovie && fmt === 'TV') score += 20;
+        if (fmt === 'SPECIAL' || fmt === 'ONA' || fmt === 'OVA') score -= 10;
+        if (wantYear) {
+            const ry = parseInt(r.year, 10);
+            if (ry === wantYear) score += 15;
+            else if (ry && Math.abs(ry - wantYear) <= 1) score += 5;
+        }
+        if (score > bestScore) {
+            bestScore = score;
+            best = r;
+        }
+    }
+
+    // Require title affinity (exact/contains) adjusted by format/year bonuses;
+    // a bare year-or-first pick can map a non-anime TMDB entry to an unrelated
+    // show.
+    if (!best || bestScore < 40) {
+        return null;
+    }
+    return { malId: parseInt(best.malId, 10), anilistId: best.id, title: best.title };
 }
 
 const ANILIST_TITLE_SEARCH_QUERY = `
@@ -682,6 +848,8 @@ async function _searchAnilistByTitle(title, year) {
         if (near) {
             return near;
         }
+        // Year given but nothing matches: do not blindly take the first result.
+        return null;
     }
 
     return list[0];
