@@ -16,6 +16,7 @@
 const esbuild = require('esbuild');
 const fs = require('fs');
 const path = require('path');
+const { buildManifest } = require('./build-manifest');
 
 const srcDir = path.join(__dirname, 'src');
 const outDir = path.join(__dirname, 'providers');
@@ -184,6 +185,13 @@ async function main() {
     }
 
     console.log(`\n✨ Done! ${success} built, ${failed} skipped/failed\n`);
+
+    // Automatically rebuild the manifest.json
+    try {
+        buildManifest();
+    } catch (err) {
+        console.error('⚠️  Failed to rebuild manifest.json:', err.message);
+    }
 }
 
 main().catch(err => {
