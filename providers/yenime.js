@@ -1,6 +1,6 @@
 /**
  * yenime - Built from src/yenime/
- * Generated: 2026-08-15T23:40:10.277Z
+ * Generated: 2026-08-15T23:58:02.144Z
  */
 var __defProp = Object.defineProperty;
 var __defProps = Object.defineProperties;
@@ -826,15 +826,55 @@ function buildSeasonChain(rootAnilistId) {
 }
 
 // src/yenime/index.js
+var _logBuf = [];
+var _origLog = console.log && console.log.bind(console);
+var _origErr = console.error && console.error.bind(console);
+function _capture(fn, line) {
+  try {
+    _logBuf.push(line);
+    if (_logBuf.length > 60) {
+      _logBuf.shift();
+    }
+  } catch (e) {
+  }
+  if (fn)
+    try {
+      fn(line);
+    } catch (e) {
+    }
+}
+if (console.log) {
+  console.log = (...a) => _capture(_origLog, a.map(String).join(" "));
+}
+if (console.error) {
+  console.error = (...a) => _capture(_origErr, "ERR " + a.map(String).join(" "));
+}
+function _diagStream(diag) {
+  const text = "[Yenime DEBUG] " + diag;
+  return [{
+    name: "Yenime",
+    title: text.slice(0, 300),
+    url: "data:text/plain,debug",
+    quality: "DEBUG",
+    headers: {}
+  }];
+}
 function getStreams(tmdbId, mediaType, season, episode, languages) {
   return __async(this, null, function* () {
+    _logBuf = [];
     try {
-      console.log(`[Yenime] Request: ${mediaType} ${tmdbId}`);
+      console.log(`[Yenime] Request: ${mediaType} ${tmdbId} season=${season} episode=${episode} languages=${JSON.stringify(languages)}`);
       const streams = yield extractStreams(tmdbId, mediaType, season, episode, languages);
-      return streams;
+      if (streams && streams.length) {
+        return streams;
+      }
+      const diag = _logBuf.slice(-12).join(" | ") || "no logs captured";
+      console.log(`[Yenime] No streams; diag: ${diag}`);
+      return _diagStream(diag);
     } catch (error) {
+      const diag = `CRASH: ${error && error.message} :: ${_logBuf.slice(-6).join(" | ")}`;
       console.error(`[Yenime] Error: ${error.message}`);
-      return [];
+      return _diagStream(diag);
     }
   });
 }
