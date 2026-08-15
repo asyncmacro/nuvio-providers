@@ -1,12 +1,12 @@
 {
   "name": "Kitsune",
-  "version": "0.1",
+  "version": "0.2",
   "scrapers": [
     {
       "id": "yenime",
       "name": "Yenime",
       "description": "Yenime anime provider via AniList metadata and Vidbolt streams.",
-      "version": "0.1",
+      "version": "0.2",
       "author": "Your Name",
       "supportedTypes": [
         "tv",
