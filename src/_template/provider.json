@@ -1,0 +1,23 @@
+{
+  "id": "template",
+  "name": "Template Provider",
+  "description": "Template provider description.",
+  "version": "1.0.0",
+  "author": "Author Name",
+  "supportedTypes": [
+    "tv",
+    "movie"
+  ],
+  "filename": "providers/_template.js",
+  "enabled": false,
+  "logo": "",
+  "contentLanguage": [
+    "en"
+  ],
+  "formats": [
+    "mp4"
+  ],
+  "limited": false,
+  "disabledPlatforms": [],
+  "supportsExternalPlayer": true
+}

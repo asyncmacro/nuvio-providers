@@ -1,12 +1,12 @@
 {
-  "name": "All-in-One-Nuvio",
-  "version": "1.0.0",
+  "name": "Kitsune",
+  "version": "0.1",
   "scrapers": [
     {
       "id": "yenime",
       "name": "Yenime",
       "description": "Yenime anime provider via AniList metadata and Vidbolt streams.",
-      "version": "0.1.0",
+      "version": "0.1",
       "author": "Your Name",
       "supportedTypes": [
         "tv",
