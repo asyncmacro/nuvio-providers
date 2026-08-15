@@ -166,6 +166,17 @@ Other fixes vs kitsune:
   * If the TMDB page 404s, fall through to MAL/AniList ids (kitsune-style
     traffic, e.g. MAL 52991 Frieren) — movies and season-1 episodes also
     work via MAL-direct when AniList is unreachable
+- TV-only hardening ("movies work, anime shows don't" in-app):
+  * `buildSeasonChain` no longer throws when AniList is unreachable/rate-
+    limited — it catches, returns the partial/empty chain and falls back to
+    the root MAL id (correct for season 1); retry budget inside chains is
+    2 attempts so a dead AniList costs ~2-3s, not minutes
+  * `season`/`episode` are coerced to ints (Nuvio may pass strings, which
+    broke the strict chain-season `===` lookup)
+  * Apostrophe variants (U+2019 vs U+0027) are normalized in title matching:
+    TMDB 209867 (Frieren) previously matched the "Sousou no Frieren: ●● no
+    Mahou" ONA spinoff because the backend stores curly apostrophes;
+    now it resolves to the main series (MAL 52991)
 
 Verified against the live backend (token → megaplay → HLS master → variants):
 - TMDB 37854 (One Piece) → 1 stream @1080p; TMDB 372058 (Your Name) → 1 stream
@@ -204,7 +215,9 @@ AniList is unreachable, so streams work even then.
 - [ ] v2 enhancements (Retry-After honoring, TMDB_API_KEY configurable per install)
 - [x] `node build.js yenime` (output in `providers/yenime.js`)
 - [x] Manifest entry in `manifest.json` (id `yenime`, filename `providers/yenime.js`)
-- [x] End-to-end test of built `providers/yenime.js`: TMDB ids (37854, 372058)
-      resolve keyless via Vidbolt search; non-anime TMDB ids return `[]`;
-      MAL ids without TMDB pages fall through to MAL/AniList passthrough;
-      season chains build from AniList SEQUEL edges; dub→sub fallback works
+- [x] End-to-end test of built `providers/yenime.js`: TMDB ids (37854, 372058,
+      209867) resolve keyless via Vidbolt search; non-anime TMDB ids return
+      `[]`; MAL ids without TMDB pages fall through to MAL/AniList passthrough;
+      season chains build from AniList SEQUEL edges and degrade to root-MAL
+      when AniList is down (verified via simulated outage); dub→sub fallback
+      works; string season/episode inputs coerced

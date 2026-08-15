@@ -481,8 +481,8 @@ export async function extractStreams(tmdbId, mediaType, season, episode, languag
 
         const malId = resolved.malId;
         const isMovie = String(mediaType || '').toLowerCase() === 'movie';
-        const seasonNum = season || 1;
-        const episodeNum = (isMovie ? 1 : episode) || 1;
+        const seasonNum = parseInt(season, 10) || 1;
+        const episodeNum = isMovie ? 1 : (parseInt(episode, 10) || 1);
 
         const audioType = _audioType(languages);
 
@@ -577,8 +577,8 @@ async function getAnimeInfoByMal(malId) {
     return data?.data?.Media || null;
 }
 
-async function getAnimeDetail(anilistId) {
-    const data = await anilistWithRetry(ANILIST_MEDIA_DETAIL_QUERY, { animeId: anilistId });
+async function getAnimeDetail(anilistId, maxAttempts = 3) {
+    const data = await anilistWithRetry(ANILIST_MEDIA_DETAIL_QUERY, { animeId: anilistId }, maxAttempts);
     return data?.data?.Media || null;
 }
 
@@ -715,12 +715,14 @@ async function _tmdbPageMeta(tmdbId, kind) {
         return null;
     }
     const raw = match[1].replace(/&#8212;.*$/i, ''); // strip "— The Movie Database (TMDB)"
+    // Decode common entities; normalize apostrophes to the straight form so
+    // they match the Vidbolt backend's stored titles (which use U+2019).
     const title = raw
         .replace(/&amp;/g, '&')
         .replace(/&#0?39;|&apos;/g, "'")
         .replace(/&quot;/g, '"')
         .replace(/&#x27;/g, "'")
-        .replace(/&#8217;/g, '\u2019')
+        .replace(/&#821[67];|&#x201[89];/g, "'")
         .trim();
 
     const tvMatch = title.match(/^(.*?)\s*\(TV Series (\d{4})\)\s*$/i);
@@ -768,8 +770,10 @@ async function _vidboltSearchByTitle(title, year, mediaType) {
 
     const wantYear = parseInt(year, 10);
     const wantMovie = String(mediaType || '').toLowerCase() === 'movie';
-    const normalized = String(title || '').toLowerCase().trim();
-    const ci = (v) => String(v || '').toLowerCase().trim();
+    // Normalize case and apostrophe variants (U+2019 vs U+0027 etc.) so
+    // TMDB-derived titles match the backend's stored titles exactly.
+    const norm = (v) => String(v || '').toLowerCase().replace(/[\u2018\u2019\u02BB\u02BC]/g, "'").trim();
+    const normalized = norm(title);
 
     // Score each result: exact title match dominates; format preference and
     // year proximity break ties; collab CMs / side content (SPECIAL/ONA/OVA)
@@ -778,8 +782,8 @@ async function _vidboltSearchByTitle(title, year, mediaType) {
     let bestScore = -Infinity;
     for (const r of results) {
         if (!r.malId) continue;
-        const t = ci(r.title);
-        const ro = ci(r.titleRomaji);
+        const t = norm(r.title);
+        const ro = norm(r.titleRomaji);
         let score = 0;
         if (t === normalized || ro === normalized) {
             score += 100;
@@ -859,29 +863,42 @@ async function buildSeasonChain(rootAnilistId) {
     if (seasonChainCache.has(rootAnilistId)) {
         return seasonChainCache.get(rootAnilistId);
     }
+    if (!rootAnilistId) {
+        return [];
+    }
     const chain = [];
     const seen = new Set();
     let currentId = rootAnilistId;
 
-    while (currentId && !seen.has(currentId) && chain.length < 20) {
-        seen.add(currentId);
-        const media = await getAnimeDetail(currentId);
-        if (!media) break;
+    try {
+        while (currentId && !seen.has(currentId) && chain.length < 20) {
+            seen.add(currentId);
+            // Lighter retry budget inside chains: a slow/blocked AniList must
+            // not stall stream delivery for minutes.
+            const media = await getAnimeDetail(currentId, 2);
+            if (!media) break;
 
-        chain.push({
-            season_number: chain.length + 1,
-            anilist_id: media.id,
-            mal_id: media.idMal,
-            title: media.title?.english || media.title?.romaji || 'Unknown',
-            format: media.format,
-            episodes: media.episodes || 0
-        });
+            chain.push({
+                season_number: chain.length + 1,
+                anilist_id: media.id,
+                mal_id: media.idMal,
+                title: media.title?.english || media.title?.romaji || 'Unknown',
+                format: media.format,
+                episodes: media.episodes || 0
+            });
 
-        // Find SEQUEL
-        const sequel = (media.relations?.edges || []).find(e => e.relationType === 'SEQUEL' && e.node?.type === 'ANIME');
-        currentId = sequel?.node?.id || null;
+            // Find SEQUEL
+            const sequel = (media.relations?.edges || []).find(e => e.relationType === 'SEQUEL' && e.node?.type === 'ANIME');
+            currentId = sequel?.node?.id || null;
+        }
+        seasonChainCache.set(rootAnilistId, chain);
+    } catch (err) {
+        // AniList down/rate-limited: return whatever we have (possibly empty).
+        // Callers fall back to the root MAL id, which is correct for season 1.
+        console.warn(`[Yenime] Season chain build interrupted for ${rootAnilistId}: ${err.message}`);
+        if (!chain.length) {
+            console.warn('[Yenime] Using root MAL id for season resolution');
+        }
     }
-
-    seasonChainCache.set(rootAnilistId, chain);
     return chain;
 }

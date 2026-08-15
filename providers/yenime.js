@@ -1,6 +1,6 @@
 /**
  * yenime - Built from src/yenime/
- * Generated: 2026-08-15T23:23:32.795Z
+ * Generated: 2026-08-15T23:35:04.230Z
  */
 var __defProp = Object.defineProperty;
 var __defProps = Object.defineProperties;
@@ -470,8 +470,8 @@ function extractStreams(tmdbId, mediaType, season, episode, languages) {
       }
       const malId = resolved.malId;
       const isMovie = String(mediaType || "").toLowerCase() === "movie";
-      const seasonNum = season || 1;
-      const episodeNum = (isMovie ? 1 : episode) || 1;
+      const seasonNum = parseInt(season, 10) || 1;
+      const episodeNum = isMovie ? 1 : parseInt(episode, 10) || 1;
       const audioType = _audioType(languages);
       if (isMovie) {
         console.log(`[Yenime] Movie MAL ${malId} -> episode 1 (${audioType})`);
@@ -539,10 +539,10 @@ function getAnimeInfoByMal(malId) {
     return ((_a = data == null ? void 0 : data.data) == null ? void 0 : _a.Media) || null;
   });
 }
-function getAnimeDetail(anilistId) {
+function getAnimeDetail(anilistId, maxAttempts = 3) {
   return __async(this, null, function* () {
     var _a;
-    const data = yield anilistWithRetry(ANILIST_MEDIA_DETAIL_QUERY, { animeId: anilistId });
+    const data = yield anilistWithRetry(ANILIST_MEDIA_DETAIL_QUERY, { animeId: anilistId }, maxAttempts);
     return ((_a = data == null ? void 0 : data.data) == null ? void 0 : _a.Media) || null;
   });
 }
@@ -648,7 +648,7 @@ function _tmdbPageMeta(tmdbId, kind) {
       return null;
     }
     const raw = match[1].replace(/&#8212;.*$/i, "");
-    const title = raw.replace(/&amp;/g, "&").replace(/&#0?39;|&apos;/g, "'").replace(/&quot;/g, '"').replace(/&#x27;/g, "'").replace(/&#8217;/g, "\u2019").trim();
+    const title = raw.replace(/&amp;/g, "&").replace(/&#0?39;|&apos;/g, "'").replace(/&quot;/g, '"').replace(/&#x27;/g, "'").replace(/&#821[67];|&#x201[89];/g, "'").trim();
     const tvMatch = title.match(/^(.*?)\s*\(TV Series (\d{4})\)\s*$/i);
     if (tvMatch) {
       return { title: tvMatch[1].trim(), year: parseInt(tvMatch[2], 10) };
@@ -689,15 +689,15 @@ function _vidboltSearchByTitle(title, year, mediaType) {
     }
     const wantYear = parseInt(year, 10);
     const wantMovie = String(mediaType || "").toLowerCase() === "movie";
-    const normalized = String(title || "").toLowerCase().trim();
-    const ci = (v) => String(v || "").toLowerCase().trim();
+    const norm = (v) => String(v || "").toLowerCase().replace(/[\u2018\u2019\u02BB\u02BC]/g, "'").trim();
+    const normalized = norm(title);
     let best = null;
     let bestScore = -Infinity;
     for (const r of results) {
       if (!r.malId)
         continue;
-      const t = ci(r.title);
-      const ro = ci(r.titleRomaji);
+      const t = norm(r.title);
+      const ro = norm(r.titleRomaji);
       let score = 0;
       if (t === normalized || ro === normalized) {
         score += 100;
@@ -776,29 +776,39 @@ function buildSeasonChain(rootAnilistId) {
     if (seasonChainCache.has(rootAnilistId)) {
       return seasonChainCache.get(rootAnilistId);
     }
+    if (!rootAnilistId) {
+      return [];
+    }
     const chain = [];
     const seen = /* @__PURE__ */ new Set();
     let currentId = rootAnilistId;
-    while (currentId && !seen.has(currentId) && chain.length < 20) {
-      seen.add(currentId);
-      const media = yield getAnimeDetail(currentId);
-      if (!media)
-        break;
-      chain.push({
-        season_number: chain.length + 1,
-        anilist_id: media.id,
-        mal_id: media.idMal,
-        title: ((_a = media.title) == null ? void 0 : _a.english) || ((_b = media.title) == null ? void 0 : _b.romaji) || "Unknown",
-        format: media.format,
-        episodes: media.episodes || 0
-      });
-      const sequel = (((_c = media.relations) == null ? void 0 : _c.edges) || []).find((e) => {
-        var _a2;
-        return e.relationType === "SEQUEL" && ((_a2 = e.node) == null ? void 0 : _a2.type) === "ANIME";
-      });
-      currentId = ((_d = sequel == null ? void 0 : sequel.node) == null ? void 0 : _d.id) || null;
+    try {
+      while (currentId && !seen.has(currentId) && chain.length < 20) {
+        seen.add(currentId);
+        const media = yield getAnimeDetail(currentId, 2);
+        if (!media)
+          break;
+        chain.push({
+          season_number: chain.length + 1,
+          anilist_id: media.id,
+          mal_id: media.idMal,
+          title: ((_a = media.title) == null ? void 0 : _a.english) || ((_b = media.title) == null ? void 0 : _b.romaji) || "Unknown",
+          format: media.format,
+          episodes: media.episodes || 0
+        });
+        const sequel = (((_c = media.relations) == null ? void 0 : _c.edges) || []).find((e) => {
+          var _a2;
+          return e.relationType === "SEQUEL" && ((_a2 = e.node) == null ? void 0 : _a2.type) === "ANIME";
+        });
+        currentId = ((_d = sequel == null ? void 0 : sequel.node) == null ? void 0 : _d.id) || null;
+      }
+      seasonChainCache.set(rootAnilistId, chain);
+    } catch (err) {
+      console.warn(`[Yenime] Season chain build interrupted for ${rootAnilistId}: ${err.message}`);
+      if (!chain.length) {
+        console.warn("[Yenime] Using root MAL id for season resolution");
+      }
     }
-    seasonChainCache.set(rootAnilistId, chain);
     return chain;
   });
 }

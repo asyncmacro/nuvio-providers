@@ -2,7 +2,7 @@
   "id": "yenime",
   "name": "Yenime",
   "description": "Yenime anime provider via AniList metadata and Vidbolt streams.",
-  "version": "0.3",
+  "version": "0.4",
   "author": "Your Name",
   "supportedTypes": [
     "tv",
