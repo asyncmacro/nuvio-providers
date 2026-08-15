@@ -1,6 +1,6 @@
 /**
  * yenime - Built from src/yenime/
- * Generated: 2026-08-15T17:49:15.573Z
+ * Generated: 2026-08-15T22:41:53.735Z
  */
 var __defProp = Object.defineProperty;
 var __defProps = Object.defineProperties;
@@ -21,6 +21,18 @@ var __spreadValues = (a, b) => {
   return a;
 };
 var __spreadProps = (a, b) => __defProps(a, __getOwnPropDescs(b));
+var __objRest = (source, exclude) => {
+  var target = {};
+  for (var prop in source)
+    if (__hasOwnProp.call(source, prop) && exclude.indexOf(prop) < 0)
+      target[prop] = source[prop];
+  if (source != null && __getOwnPropSymbols)
+    for (var prop of __getOwnPropSymbols(source)) {
+      if (exclude.indexOf(prop) < 0 && __propIsEnum.call(source, prop))
+        target[prop] = source[prop];
+    }
+  return target;
+};
 var __async = (__this, __arguments, generator) => {
   return new Promise((resolve, reject) => {
     var fulfilled = (value) => {
@@ -49,15 +61,17 @@ var HEADERS = {
   "Accept-Language": "en-US,en;q=0.9"
 };
 var VIDBOLT_API = "https://hianime.filmu.in";
+var VIDBOLT_HOME = "https://hianime.filmu.in/";
 var VIDBOLT_MEGAPLAY_REFERER = "https://hianime.filmu.in/hianime/megaplay";
 var DEFAULT_STREAM_REFERER = "https://megaplay.buzz/";
 var ANILIST_API = "https://graphql.anilist.co";
 function fetchText(_0) {
   return __async(this, arguments, function* (url, options = {}) {
     console.log(`[Template] Fetching: ${url}`);
+    const _a = options, { headers: extraHeaders } = _a, rest = __objRest(_a, ["headers"]);
     const response = yield fetch(url, __spreadValues({
-      headers: __spreadValues(__spreadValues({}, HEADERS), options.headers)
-    }, options));
+      headers: __spreadValues(__spreadValues({}, HEADERS), extraHeaders || {})
+    }, rest));
     if (!response.ok) {
       throw new Error(`HTTP error ${response.status} for ${url}`);
     }
@@ -72,13 +86,14 @@ function fetchJson(_0) {
 }
 function postJson(_0, _1) {
   return __async(this, arguments, function* (url, data, options = {}) {
+    const _a = options, { headers: extraHeaders } = _a, rest = __objRest(_a, ["headers"]);
     const response = yield fetch(url, __spreadValues({
       method: "POST",
       headers: __spreadValues(__spreadValues({
         "Content-Type": "application/json"
-      }, HEADERS), options.headers),
+      }, HEADERS), extraHeaders || {}),
       body: JSON.stringify(data)
-    }, options));
+    }, rest));
     if (!response.ok) {
       throw new Error(`HTTP error ${response.status} for ${url}`);
     }
@@ -126,18 +141,54 @@ query ($animeId: Int) {
   }
 }
 `;
+var DUB_LANGUAGE_FLAGS = ["dub", "dubbed", "en-dub", "english-dub", "english dub"];
+var ANILIST_UA = "kitsune/0.1";
+var TMDB_API_BASE = "https://api.themoviedb.org/3";
+var TMDB_API_KEY = (() => {
+  try {
+    return typeof process !== "undefined" && process.env && process.env.TMDB_API_KEY || "";
+  } catch (err) {
+    return "";
+  }
+})();
+var seasonChainCache = /* @__PURE__ */ new Map();
 var cachedToken = null;
 var tokenExpiry = 0;
+function _invalidateToken() {
+  cachedToken = null;
+  tokenExpiry = 0;
+}
+function _audioType(languages) {
+  let envAudio = "";
+  try {
+    envAudio = typeof process !== "undefined" && process.env && process.env.KITSUNE_YENIME_AUDIO ? String(process.env.KITSUNE_YENIME_AUDIO).trim().toLowerCase() : "";
+  } catch (err) {
+  }
+  if (envAudio === "sub" || envAudio === "dub") {
+    return envAudio;
+  }
+  if (Array.isArray(languages) && languages.length) {
+    const wanted = languages.map((l) => String(l).toLowerCase().trim());
+    if (wanted.some((w) => DUB_LANGUAGE_FLAGS.includes(w))) {
+      return "dub";
+    }
+  }
+  return "sub";
+}
 function _getVidboltToken() {
   return __async(this, null, function* () {
-    var _a;
     const now = Date.now();
     if (cachedToken && now < tokenExpiry) {
       return cachedToken;
     }
     try {
-      const data = yield postJson(`${VIDBOLT_API}/token`, {});
-      const token = (data == null ? void 0 : data.token) || ((_a = data == null ? void 0 : data.data) == null ? void 0 : _a.token) || data;
+      const headers = {
+        Accept: "application/json",
+        Referer: VIDBOLT_HOME,
+        Origin: VIDBOLT_API
+      };
+      const data = yield postJson(`${VIDBOLT_API}/token`, {}, { headers });
+      const token = data && (data.token || data.data && data.data.token) || null;
       if (!token) {
         throw new Error("No token in response");
       }
@@ -151,19 +202,52 @@ function _getVidboltToken() {
     }
   });
 }
-function _fetchVidboltStreams(malId, episode, audioType) {
+function _requestMegaplay(malId, episode, audioType, token) {
   return __async(this, null, function* () {
-    const token = yield _getVidboltToken();
     const url = `${VIDBOLT_API}/hianime/megaplay?malId=${encodeURIComponent(malId)}&ep=${encodeURIComponent(episode)}&type=${encodeURIComponent(audioType)}`;
     const headers = __spreadProps(__spreadValues({}, HEADERS), {
       Referer: VIDBOLT_MEGAPLAY_REFERER,
-      "X-Token": token,
+      "x-api-key": token,
       // Some endpoints also check Origin
-      Origin: "https://hianime.filmu.in"
+      Origin: VIDBOLT_API
     });
     console.log(`[Yenime] Fetching megaplay: ${url}`);
-    const data = yield fetchJson(url, { headers });
-    return data;
+    let resp;
+    try {
+      resp = yield fetch(url, { headers });
+    } catch (err) {
+      console.error(`[Yenime] Megaplay request failed: ${err.message}`);
+      return { error: err.message };
+    }
+    if (resp.status === 401 || resp.status === 403) {
+      return { authStatus: resp.status };
+    }
+    if (!resp.ok) {
+      console.log(`[Yenime] Megaplay HTTP ${resp.status}`);
+      return { error: `http ${resp.status}` };
+    }
+    try {
+      return yield resp.json();
+    } catch (err) {
+      console.error("[Yenime] Megaplay returned non-JSON payload");
+      return { error: "json" };
+    }
+  });
+}
+function _fetchVidboltStreams(malId, episode, audioType) {
+  return __async(this, null, function* () {
+    let token = yield _getVidboltToken();
+    let data = yield _requestMegaplay(malId, episode, audioType, token);
+    if (data && typeof data.authStatus === "number") {
+      console.log(`[Yenime] Megaplay auth rejected (HTTP ${data.authStatus}), refreshing token and retrying`);
+      _invalidateToken();
+      token = yield _getVidboltToken();
+      data = yield _requestMegaplay(malId, episode, audioType, token);
+    }
+    if (!data || data.error) {
+      return { streams: [], subtitles: [] };
+    }
+    return _parseVidboltResponse(malId, episode, audioType, data);
   });
 }
 function _expandHls(masterUrl, headers) {
@@ -182,14 +266,18 @@ function _expandHls(masterUrl, headers) {
           const uri = line.startsWith("http") ? line : baseUrl + line;
           const resMatch = currentInfo.match(/RESOLUTION=(\d+x\d+)/);
           const bwMatch = currentInfo.match(/BANDWIDTH=(\d+)/);
-          const resolution = resMatch ? resMatch[1] : null;
-          const bandwidth = bwMatch ? Math.round(parseInt(bwMatch[1], 10) / 1e3) : null;
-          const quality = resolution || (bandwidth ? `${bandwidth}k` : "auto");
+          let quality = "auto";
+          if (resMatch) {
+            const height = resMatch[1].split("x")[1];
+            quality = `${height}p`;
+          } else if (bwMatch) {
+            quality = `${Math.round(parseInt(bwMatch[1], 10) / 1e3)}k`;
+          }
           variants.push({
             url: uri,
             quality,
-            resolution,
-            bandwidth
+            resolution: resMatch ? resMatch[1] : null,
+            bandwidth: bwMatch ? parseInt(bwMatch[1], 10) : null
           });
           currentInfo = null;
         }
@@ -204,31 +292,82 @@ function _expandHls(masterUrl, headers) {
     }
   });
 }
+function _originFromUrl(url) {
+  const match = String(url).match(/^(https?:\/\/[^/]+)/);
+  return match ? match[1] : String(url).replace(/\/+$/, "");
+}
+function _parseSubtitles(items) {
+  const out = [];
+  if (!items) {
+    return out;
+  }
+  const list = Array.isArray(items) ? items : [items];
+  for (const item of list) {
+    let url = null;
+    let language = "und";
+    if (typeof item === "string") {
+      url = item;
+    } else if (item && typeof item === "object") {
+      url = item.url || item.file || item.src || item.path || item.link;
+      language = item.language || item.lang || item.label || item.name || item.code || "und";
+    }
+    if (!url) {
+      continue;
+    }
+    url = String(url);
+    if (url.startsWith("//")) {
+      url = `https:${url}`;
+    } else if (url.startsWith("/")) {
+      url = VIDBOLT_API + url;
+    }
+    if (!url.startsWith("http")) {
+      continue;
+    }
+    const lowered = url.toLowerCase();
+    const extMatch = lowered.match(/\.(vtt|ass|ssa)(?:[&?]|$)/);
+    const format = extMatch ? extMatch[1] : "srt";
+    const normalizedLang = String(language).toLowerCase().trim().replace(/_/g, "-").split("-")[0] || "und";
+    out.push({ url, lang: normalizedLang, format });
+  }
+  return out;
+}
 function _parseVidboltResponse(malId, episode, audioType, data) {
   return __async(this, null, function* () {
-    var _a, _b;
+    var _a, _b, _c;
     const streams = [];
-    const sources = (data == null ? void 0 : data.sources) || ((_a = data == null ? void 0 : data.data) == null ? void 0 : _a.sources) || ((_b = data == null ? void 0 : data.result) == null ? void 0 : _b.sources) || (data == null ? void 0 : data.links) || [];
+    const allSubtitles = [];
+    let sources = (data == null ? void 0 : data.streams) || (data == null ? void 0 : data.sources) || ((_a = data == null ? void 0 : data.data) == null ? void 0 : _a.streams) || ((_b = data == null ? void 0 : data.data) == null ? void 0 : _b.sources) || ((_c = data == null ? void 0 : data.result) == null ? void 0 : _c.sources) || (data == null ? void 0 : data.links);
     if (!Array.isArray(sources) || sources.length === 0) {
-      console.log(`[Yenime] No sources found in megaplay response`);
       if (Array.isArray(data)) {
-        sources.push(...data);
+        sources = data;
       } else {
-        return streams;
+        console.log(`[Yenime] No sources found in megaplay response`);
+        return { streams: [], subtitles: [] };
       }
     }
-    const streamHeaders = {
-      Referer: DEFAULT_STREAM_REFERER,
-      "User-Agent": HEADERS["User-Agent"],
-      Origin: "https://megaplay.buzz"
-    };
     for (const src of sources) {
-      const url = src.url || src.file || src.link || src.src || src;
-      if (!url)
+      if (!src || typeof src !== "object") {
         continue;
+      }
+      const url = src.url || src.file || src.link || src.src;
+      if (!url) {
+        continue;
+      }
+      const referer = src.referer || src.referrer || DEFAULT_STREAM_REFERER;
+      const streamHeaders = {
+        Referer: referer,
+        "User-Agent": HEADERS["User-Agent"],
+        Origin: _originFromUrl(referer)
+      };
+      const rawSubs = src.subtitles || src.captions || src.tracks || [];
+      const subtitlesForStream = _parseSubtitles(rawSubs);
+      for (const sub of subtitlesForStream) {
+        sub.headers = streamHeaders;
+        allSubtitles.push(sub);
+      }
       const label = src.label || src.quality || src.res || src.height || "auto";
-      const type = (src.type || "").toLowerCase();
-      const isHls = type.includes("hls") || url.includes(".m3u8");
+      const type = String(src.type || "").toLowerCase();
+      const isHls = type.includes("hls") || String(url).includes(".m3u8");
       if (isHls) {
         const variants = yield _expandHls(url, streamHeaders);
         for (const v of variants) {
@@ -250,27 +389,101 @@ function _parseVidboltResponse(malId, episode, audioType, data) {
         });
       }
     }
-    return streams;
+    return {
+      streams: _dedupeStreams(streams),
+      subtitles: _dedupeSubtitles(allSubtitles)
+    };
   });
 }
-function extractStreams(tmdbId, mediaType, season, episode) {
+function _dedupeStreams(streams) {
+  const unique = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const stream of streams) {
+    const referer = stream.headers && stream.headers.Referer || "";
+    const key = `${stream.url}|${stream.quality}|${referer}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    unique.push(stream);
+  }
+  unique.sort((a, b) => (_resolutionHeight(b.quality) || 0) - (_resolutionHeight(a.quality) || 0));
+  return unique;
+}
+function _dedupeSubtitles(subtitles) {
+  const unique = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const sub of subtitles) {
+    const key = `${sub.url}|${sub.lang}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    unique.push(sub);
+  }
+  return unique;
+}
+function _resolutionHeight(quality) {
+  if (!quality) {
+    return 0;
+  }
+  const text = String(quality).toLowerCase();
+  const pMatch = text.match(/(\d+)p/);
+  if (pMatch) {
+    return parseInt(pMatch[1], 10);
+  }
+  const xyMatch = text.match(/(\d+)x(\d+)/);
+  if (xyMatch) {
+    return parseInt(xyMatch[2], 10);
+  }
+  const numMatch = text.match(/(\d{3,4})/);
+  if (numMatch) {
+    return parseInt(numMatch[1], 10);
+  }
+  return 0;
+}
+function _toNuvioStreams(streams, subtitles) {
+  if (!subtitles.length) {
+    return streams;
+  }
+  return streams.map((s) => Object.assign({}, s, { subtitles }));
+}
+function extractStreams(tmdbId, mediaType, season, episode, languages) {
   return __async(this, null, function* () {
     try {
-      const malId = parseInt(tmdbId, 10);
-      if (isNaN(malId)) {
-        console.log(`[Yenime] Invalid tmdbId/MAL id: ${tmdbId}`);
+      let resolved = yield _resolveInput(tmdbId, mediaType);
+      if (!resolved || !resolved.malId) {
+        const numeric = parseInt(tmdbId, 10);
+        if (!isNaN(numeric)) {
+          console.log(`[Yenime] Resolver miss for ${tmdbId}, falling back to MAL-direct (kitsune convention)`);
+          resolved = { malId: numeric, anilistId: null, media: null, source: "mal-fallback" };
+        }
+      }
+      if (!resolved || !resolved.malId) {
+        console.log(`[Yenime] Could not resolve id to MAL/AniList: ${tmdbId}`);
         return [];
       }
-      const info = yield getAnimeInfoByMal(malId);
-      if (!info) {
-        console.log(`[Yenime] No AniList info for MAL ${malId}`);
-        return [];
+      const malId = resolved.malId;
+      const isMovie = String(mediaType || "").toLowerCase() === "movie";
+      const seasonNum = season || 1;
+      const episodeNum = (isMovie ? 1 : episode) || 1;
+      const audioType = _audioType(languages);
+      if (isMovie) {
+        console.log(`[Yenime] Movie MAL ${malId} -> episode 1 (${audioType})`);
+        let res2 = yield _fetchVidboltStreams(malId, 1, audioType);
+        if (!res2.streams.length && audioType === "dub") {
+          console.log("[Yenime] No dub streams, falling back to sub");
+          res2 = yield _fetchVidboltStreams(malId, 1, "sub");
+        }
+        console.log(`[Yenime] Parsed ${res2.streams.length} streams`);
+        return _toNuvioStreams(res2.streams, res2.subtitles);
       }
-      console.log(`[Yenime] Found: ${info.title.english || info.title.romaji} | MAL:${info.idMal} | AniList:${info.id} | Episodes:${info.episodes}`);
-      const chain = yield buildSeasonChain(info.id);
+      const info = resolved.media;
+      const rootTitle = info && info.title && (info.title.english || info.title.romaji) || "Unknown";
+      console.log(`[Yenime] Found: ${rootTitle} | MAL:${resolved.malId} | AniList:${resolved.anilistId} | source:${resolved.source}`);
+      const chain = yield buildSeasonChain(resolved.anilistId);
       console.log(`[Yenime] Season chain length: ${chain.length}`);
       chain.forEach((s) => console.log(`  S${s.season_number}: ${s.title} - MAL:${s.mal_id} - AniList:${s.anilist_id} - Ep:${s.episodes}`));
-      const seasonNum = season || 1;
       const seasonInfo = chain.find((s) => s.season_number === seasonNum);
       const resolvedMalId = (seasonInfo == null ? void 0 : seasonInfo.mal_id) || malId;
       if (seasonInfo) {
@@ -278,36 +491,155 @@ function extractStreams(tmdbId, mediaType, season, episode) {
       } else {
         console.log(`[Yenime] Season ${seasonNum} not found in chain, using root MAL ${malId}`);
       }
-      const episodeNum = episode || 1;
-      console.log(`[Yenime] Requested episode ${episodeNum} of season ${seasonNum} (MAL ${resolvedMalId})`);
-      const audioType = "sub";
-      const vidboltData = yield _fetchVidboltStreams(resolvedMalId, episodeNum, audioType);
-      const streams = yield _parseVidboltResponse(resolvedMalId, episodeNum, audioType, vidboltData);
-      console.log(`[Yenime] Parsed ${streams.length} streams`);
-      return streams;
+      console.log(`[Yenime] Requested episode ${episodeNum} of season ${seasonNum} (MAL ${resolvedMalId}, ${audioType})`);
+      let res = yield _fetchVidboltStreams(resolvedMalId, episodeNum, audioType);
+      if (!res.streams.length && audioType === "dub") {
+        console.log("[Yenime] No dub streams, falling back to sub");
+        res = yield _fetchVidboltStreams(resolvedMalId, episodeNum, "sub");
+      }
+      console.log(`[Yenime] Parsed ${res.streams.length} streams`);
+      return _toNuvioStreams(res.streams, res.subtitles);
     } catch (err) {
       console.error(`[Yenime] Error: ${err.message}`);
       return [];
     }
   });
 }
+function anilistWithRetry(query, variables, maxAttempts = 3) {
+  return __async(this, null, function* () {
+    let lastErr;
+    for (let i = 0; i < maxAttempts; i++) {
+      try {
+        const data = yield postJson(ANILIST_API, { query, variables }, {
+          headers: { "User-Agent": ANILIST_UA }
+        });
+        if (data == null ? void 0 : data.errors) {
+          throw new Error(data.errors.map((e) => e.message).join("; "));
+        }
+        return data;
+      } catch (err) {
+        lastErr = err;
+        const wait = 500 * Math.pow(2, i);
+        console.warn(`[Yenime] AniList request failed attempt ${i + 1}/${maxAttempts}: ${err.message}, retry in ${wait}ms`);
+        yield new Promise((r) => setTimeout(r, wait));
+      }
+    }
+    throw lastErr;
+  });
+}
 function getAnimeInfoByMal(malId) {
   return __async(this, null, function* () {
     var _a;
-    const data = yield postJson(ANILIST_API, { query: ANILIST_ID_FROM_MAL_QUERY, variables: { malId } });
+    const data = yield anilistWithRetry(ANILIST_ID_FROM_MAL_QUERY, { malId });
     return ((_a = data == null ? void 0 : data.data) == null ? void 0 : _a.Media) || null;
   });
 }
 function getAnimeDetail(anilistId) {
   return __async(this, null, function* () {
     var _a;
-    const data = yield postJson(ANILIST_API, { query: ANILIST_MEDIA_DETAIL_QUERY, variables: { animeId: anilistId } });
+    const data = yield anilistWithRetry(ANILIST_MEDIA_DETAIL_QUERY, { animeId: anilistId });
     return ((_a = data == null ? void 0 : data.data) == null ? void 0 : _a.Media) || null;
+  });
+}
+function _resolveInput(input, mediaType) {
+  return __async(this, null, function* () {
+    try {
+      if (typeof input !== "number" && !/^\d+$/.test(String(input))) {
+        return null;
+      }
+      const id = parseInt(input, 10);
+      const infoByMal = yield getAnimeInfoByMal(id);
+      if (infoByMal) {
+        return { malId: id, anilistId: infoByMal.id, media: infoByMal, source: "mal" };
+      }
+      const infoById = yield getAnimeDetail(id);
+      if (infoById) {
+        return { malId: infoById.idMal || id, anilistId: id, media: infoById, source: "anilist" };
+      }
+      const viaTmdb = yield _resolveViaTmdb(id, mediaType);
+      return viaTmdb;
+    } catch (err) {
+      console.warn(`[Yenime] Resolver error for ${input}: ${err.message}`);
+      return null;
+    }
+  });
+}
+function _resolveViaTmdb(tmdbId, mediaType) {
+  return __async(this, null, function* () {
+    if (!TMDB_API_KEY) {
+      return null;
+    }
+    const kind = String(mediaType || "").toLowerCase() === "movie" ? "movie" : "tv";
+    let info;
+    try {
+      const url = `${TMDB_API_BASE}/${kind}/${tmdbId}?api_key=${TMDB_API_KEY}&language=en-US`;
+      info = yield fetchJson(url, {
+        headers: { Accept: "application/json", "User-Agent": ANILIST_UA }
+      });
+    } catch (err) {
+      console.warn(`[Yenime] TMDB lookup failed for ${tmdbId}: ${err.message}`);
+      return null;
+    }
+    const title = info && (info.title || info.name);
+    const year = String(info && (info.release_date || info.first_air_date) || "").slice(0, 4);
+    if (!title) {
+      return null;
+    }
+    const media = yield _searchAnilistByTitle(title, year);
+    if (!media) {
+      console.warn(`[Yenime] No AniList match for TMDB ${tmdbId} ("${title}", ${year})`);
+      return null;
+    }
+    console.log(`[Yenime] TMDB ${tmdbId} -> MAL ${media.idMal} (${media.title.english || media.title.romaji})`);
+    return { malId: media.idMal, anilistId: media.id, media, source: "tmdb" };
+  });
+}
+var ANILIST_TITLE_SEARCH_QUERY = `
+query ($search: String) {
+  Page(page: 1, perPage: 10) {
+    media(search: $search, type: ANIME) {
+      id
+      idMal
+      format
+      startDate { year }
+      title { romaji english }
+    }
+  }
+}
+`;
+function _searchAnilistByTitle(title, year) {
+  return __async(this, null, function* () {
+    let data;
+    try {
+      data = yield anilistWithRetry(ANILIST_TITLE_SEARCH_QUERY, { search: title });
+    } catch (err) {
+      console.warn(`[Yenime] AniList title search failed: ${err.message}`);
+      return null;
+    }
+    const list = data && data.data && data.data.Page && data.data.Page.media || [];
+    if (!list.length) {
+      return null;
+    }
+    const wantYear = parseInt(year, 10);
+    if (wantYear) {
+      const exact = list.find((m) => m.startDate && m.startDate.year === wantYear);
+      if (exact) {
+        return exact;
+      }
+      const near = list.find((m) => m.startDate && Math.abs(m.startDate.year - wantYear) <= 1);
+      if (near) {
+        return near;
+      }
+    }
+    return list[0];
   });
 }
 function buildSeasonChain(rootAnilistId) {
   return __async(this, null, function* () {
     var _a, _b, _c, _d;
+    if (seasonChainCache.has(rootAnilistId)) {
+      return seasonChainCache.get(rootAnilistId);
+    }
     const chain = [];
     const seen = /* @__PURE__ */ new Set();
     let currentId = rootAnilistId;
@@ -330,16 +662,17 @@ function buildSeasonChain(rootAnilistId) {
       });
       currentId = ((_d = sequel == null ? void 0 : sequel.node) == null ? void 0 : _d.id) || null;
     }
+    seasonChainCache.set(rootAnilistId, chain);
     return chain;
   });
 }
 
 // src/yenime/index.js
-function getStreams(tmdbId, mediaType, season, episode) {
+function getStreams(tmdbId, mediaType, season, episode, languages) {
   return __async(this, null, function* () {
     try {
       console.log(`[Yenime] Request: ${mediaType} ${tmdbId}`);
-      const streams = yield extractStreams(tmdbId, mediaType, season, episode);
+      const streams = yield extractStreams(tmdbId, mediaType, season, episode, languages);
       return streams;
     } catch (error) {
       console.error(`[Yenime] Error: ${error.message}`);

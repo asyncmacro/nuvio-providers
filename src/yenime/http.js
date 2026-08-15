@@ -10,6 +10,7 @@ export const HEADERS = {
 };
 
 export const VIDBOLT_API = "https://hianime.filmu.in";
+export const VIDBOLT_HOME = "https://hianime.filmu.in/";
 export const VIDBOLT_MEGAPLAY_REFERER = "https://hianime.filmu.in/hianime/megaplay";
 export const DEFAULT_STREAM_REFERER = "https://megaplay.buzz/";
 export const ANILIST_API = "https://graphql.anilist.co";
@@ -22,12 +23,14 @@ export const ANILIST_API = "https://graphql.anilist.co";
 export async function fetchText(url, options = {}) {
     console.log(`[Template] Fetching: ${url}`);
 
+    const { headers: extraHeaders, ...rest } = options;
+
     const response = await fetch(url, {
         headers: {
             ...HEADERS,
-            ...options.headers
+            ...(extraHeaders || {})
         },
-        ...options
+        ...rest
     });
 
     if (!response.ok) {
@@ -48,15 +51,16 @@ export async function fetchJson(url, options = {}) {
 }
 
 export async function postJson(url, data, options = {}) {
+    const { headers: extraHeaders, ...rest } = options;
     const response = await fetch(url, {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
             ...HEADERS,
-            ...options.headers
+            ...(extraHeaders || {})
         },
         body: JSON.stringify(data),
-        ...options
+        ...rest
     });
     if (!response.ok) {
         throw new Error(`HTTP error ${response.status} for ${url}`);
