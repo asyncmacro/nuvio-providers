@@ -1,5 +1,29 @@
 [
   {
+    "id": "yenime",
+    "name": "Yenime",
+    "description": "Yenime anime provider via AniList metadata and Vidbolt streams.",
+    "version": "0.1.0",
+    "author": "Your Name",
+    "supportedTypes": [
+      "tv",
+      "movie"
+    ],
+    "filename": "providers/yenime.js",
+    "enabled": false,
+    "logo": "",
+    "contentLanguage": [
+      "en",
+      "ja"
+    ],
+    "formats": [
+      "mp4"
+    ],
+    "limited": false,
+    "disabledPlatforms": [],
+    "supportsExternalPlayer": true
+  },
+  {
     "id": "template-provider",
     "name": "Template Provider",
     "description": "A starter template for creating Nuvio providers.",
